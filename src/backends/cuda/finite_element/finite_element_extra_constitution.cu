@@ -119,6 +119,11 @@ muda::CBufferView<Vector3> FiniteElementExtraConstitution::BaseInfo::x_bars() co
     return m_impl->finite_element_method->x_bars();
 }
 
+muda::CBufferView<IndexT> FiniteElementExtraConstitution::BaseInfo::is_fixed() const noexcept
+{
+    return m_impl->finite_element_method->is_fixed();
+}
+
 muda::CBufferView<Float> FiniteElementExtraConstitution::BaseInfo::thicknesses() const noexcept
 {
     return m_impl->finite_element_method->thicknesses();

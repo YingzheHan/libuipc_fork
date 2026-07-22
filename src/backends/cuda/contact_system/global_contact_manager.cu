@@ -5,6 +5,8 @@
 #include <kernel_cout.h>
 #include <uipc/common/unit.h>
 #include <uipc/common/zip.h>
+#include <muda/atomic.h>
+#include <fmt/format.h>
 #include <collision_detection/global_trajectory_filter.h>
 #include <contact_system/adaptive_contact_parameter_reporter.h>
 
@@ -76,6 +78,11 @@ void GlobalContactManager::Impl::init(WorldVisitor& world)
 
     // 3) reporters
     auto contact_reporter_view = contact_reporters.view();
+    reporter_gradient_offsets_counts.resize(contact_reporter_view.size());
+    reporter_hessian_offsets_counts.resize(contact_reporter_view.size());
+
+    contact_forces.resize(global_vertex_manager->positions().size(), Vector3::Zero());
+
     for(auto&& [i, R] : enumerate(contact_reporter_view))
         R->init();
     for(auto&& [i, R] : enumerate(contact_reporter_view))
@@ -231,6 +238,92 @@ Float GlobalContactManager::Impl::compute_cfl_condition()
         return 1.0;
     }
 }
+
+void GlobalContactManager::Impl::loose_resize_entries(muda::DeviceDoubletVector<Float, 3>& v, SizeT size)
+{
+    if(size > v.doublet_capacity())
+    {
+        v.reserve_doublets(static_cast<SizeT>(size * reserve_ratio));
+    }
+    v.resize_doublets(size);
+}
+
+void GlobalContactManager::Impl::loose_resize_entries(muda::DeviceTripletMatrix<Float, 3>& m, SizeT size)
+{
+    if(size > m.triplet_capacity())
+    {
+        m.reserve_triplets(static_cast<SizeT>(size * reserve_ratio));
+    }
+    m.resize_triplets(size);
+}
+
+void GlobalContactManager::Impl::assemble_contact_dense_forces()
+{
+    using namespace muda;
+
+    auto vertex_count = global_vertex_manager->positions().size();
+
+    contact_forces.resize(vertex_count);
+    contact_forces.fill(Vector3::Zero());
+
+    auto reporters = contact_reporters.view();
+    reporter_gradient_offsets_counts.resize(reporters.size());
+    reporter_hessian_offsets_counts.resize(reporters.size());
+
+    auto gradient_counts = reporter_gradient_offsets_counts.counts();
+    auto hessian_counts  = reporter_hessian_offsets_counts.counts();
+
+    for(auto&& [i, reporter] : enumerate(reporters))
+    {
+        GradientHessianExtentInfo extent_info;
+        reporter->report_gradient_hessian_extent(extent_info);
+        gradient_counts[i] = reporter->gradient_count();
+        hessian_counts[i]  = reporter->hessian_count();
+    }
+
+    reporter_gradient_offsets_counts.scan();
+    reporter_hessian_offsets_counts.scan();
+
+    auto total_gradient_count = reporter_gradient_offsets_counts.total_count();
+    auto total_hessian_count  = reporter_hessian_offsets_counts.total_count();
+
+    loose_resize_entries(collected_contact_gradients, total_gradient_count);
+    loose_resize_entries(collected_contact_hessians, total_hessian_count);
+
+    collected_contact_gradients.reshape(vertex_count);
+    collected_contact_hessians.reshape(vertex_count, vertex_count);
+
+    for(auto&& [i, reporter] : enumerate(reporters))
+    {
+        auto [g_offset, g_count] = reporter_gradient_offsets_counts[i];
+        auto [h_offset, h_count] = reporter_hessian_offsets_counts[i];
+
+        GradientHessianInfo info;
+        info.gradients(collected_contact_gradients.view().subview(g_offset, g_count));
+        info.hessians(collected_contact_hessians.view().subview(h_offset, h_count));
+        reporter->assemble(info);
+    }
+
+    if(!total_gradient_count)
+        return;
+
+    auto     forces_view = contact_forces.view();
+    Vector3* forces_ptr  = forces_view.data();
+
+    ParallelFor()
+        .kernel_name("ContactDenseForceScatter")
+        .apply(collected_contact_gradients.doublet_count(),
+               [gradients = collected_contact_gradients.cviewer().name("contact_gradients"),
+                forces    = forces_ptr] __device__(int I) mutable
+               {
+                   auto&& [vertex_index, grad] = gradients(I);
+                   Vector3 force               = -grad;
+                   auto*   dst                 = forces + vertex_index;
+                   muda::atomic_add(dst->data() + 0, force(0));
+                   muda::atomic_add(dst->data() + 1, force(1));
+                   muda::atomic_add(dst->data() + 2, force(2));
+               });
+}
 }  // namespace uipc::backend::cuda
 
 
@@ -239,6 +332,37 @@ namespace uipc::backend::cuda
 muda::Buffer2DView<ContactCoeff> GlobalContactManager::AdaptiveParameterInfo::contact_tabular() const noexcept
 {
     return m_impl->contact_tabular->view();
+}
+
+bool GlobalContactManager::do_dump(DumpInfo& info)
+{
+    const auto& config = info.config();
+
+    bool contact_force_enabled = true;
+    if(config.contains("output"))
+    {
+        const auto& output = config["output"];
+        if(output.contains("contact"))
+        {
+            const auto& contact_cfg = output["contact"];
+            if(contact_cfg.contains("force_dense"))
+                contact_force_enabled = contact_cfg["force_dense"].get<bool>();
+        }
+    }
+
+    if(!contact_force_enabled)
+        return true;
+
+    m_impl.assemble_contact_dense_forces();
+
+    if(m_impl.contact_forces.size() == 0)
+        return true;
+
+    auto path  = info.dump_path(__FILE__);
+    auto frame = info.frame();
+
+    return m_impl.dump_contact_forces.dump(fmt::format("{}contact_force.{}", path, frame),
+                                           m_impl.contact_forces);
 }
 
 S<muda::DeviceBuffer2D<ContactCoeff>> GlobalContactManager::AdaptiveParameterInfo::exchange_contact_tabular(
@@ -304,3 +428,4 @@ muda::CBuffer2DView<ContactCoeff> GlobalContactManager::contact_tabular() const 
 }
 
 }  // namespace uipc::backend::cuda
+

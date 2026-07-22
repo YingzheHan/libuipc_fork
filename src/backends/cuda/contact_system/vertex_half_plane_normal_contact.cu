@@ -59,6 +59,7 @@ void VertexHalfPlaneNormalContact::do_report_gradient_hessian_extent(
         return;
 
     info.hessian_count(count);
+    set_gradient_hessian_extent(count, count);
 }
 
 

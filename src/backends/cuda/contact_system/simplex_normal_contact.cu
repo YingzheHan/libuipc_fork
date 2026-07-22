@@ -93,6 +93,7 @@ void SimplexNormalContact::do_report_gradient_hessian_extent(GlobalContactManage
 
     info.gradient_count(contact_gradient_count);
     info.hessian_count(gradient_only ? 0 : contact_hessian_count);
+    set_gradient_hessian_extent(contact_gradient_count, contact_hessian_count);
 }
 
 void SimplexNormalContact::do_assemble(GlobalContactManager::GradientHessianInfo& info)

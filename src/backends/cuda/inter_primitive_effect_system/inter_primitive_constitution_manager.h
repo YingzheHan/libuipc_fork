@@ -127,6 +127,8 @@ class InterPrimitiveConstitutionManager final : public DyTopoEffectReporter
         bool gradient_only() const noexcept { return m_gradient_only; }
         void hessian_count(SizeT count) noexcept;
         void gradient_count(SizeT count) noexcept;
+        SizeT hessian_count() const noexcept { return m_hessian_count; }
+        SizeT gradient_count() const noexcept { return m_gradient_count; }
 
       private:
         friend class InterPrimitiveConstitution;

@@ -1,6 +1,7 @@
 #pragma once
 #include <sim_system.h>
 #include <muda/buffer.h>
+#include <muda/ext/linear_system.h>
 #include <uipc/geometry/simplicial_complex.h>
 #include <global_geometry/global_vertex_manager.h>
 #include <backends/cuda/utils/dump_utils.h>
@@ -237,6 +238,9 @@ class FiniteElementMethod final : public SimSystem
         vector<Vector2i> h_codim_1ds;
         vector<Vector3i> h_codim_2ds;
         vector<Vector4i> h_tets;
+        vector<Float>    h_edge_kappas;
+        vector<Float>    h_tet_mus;
+        vector<Float>    h_tet_lambdas;
 
         vector<IndexT> h_body_self_collision;
 
@@ -250,12 +254,15 @@ class FiniteElementMethod final : public SimSystem
 
         muda::DeviceBuffer<Vector2i> codim_1ds;
         muda::DeviceBuffer<Float>    rest_lengths;
+        muda::DeviceBuffer<Float>    edge_kappas;
 
         muda::DeviceBuffer<Vector3i> codim_2ds;
         muda::DeviceBuffer<Float>    rest_areas;
 
         muda::DeviceBuffer<Vector4i> tets;
         muda::DeviceBuffer<Float>    rest_volumes;
+        muda::DeviceBuffer<Float>    tet_mus;
+        muda::DeviceBuffer<Float>    tet_lambdas;
 
 
         // Vertex Attributes:
@@ -288,11 +295,28 @@ class FiniteElementMethod final : public SimSystem
         muda::DeviceBuffer<Matrix3x3> Dm3x3_invs;
 
 
+        // Energy Producer:
+
+        muda::DeviceVar<Float> energy_producer_energy;  // Energy Producer Energy
+        muda::DeviceBuffer<Float> energy_producer_energies;  // Energy Producer Energies
+        muda::DeviceDoubletVector<Float, 3> energy_producer_gradients;  // Energy Producer Gradient
+        SizeT energy_producer_total_hessian_count = 0;
+
+        muda::DeviceBuffer<Float>       edge_strains;
+        muda::DeviceBuffer<Float>       edge_stresses;
+        muda::DeviceBuffer<Matrix3x3>   tet_green_strains;
+        muda::DeviceBuffer<Matrix3x3>   tet_cauchy_stresses;
+
+
         // Dump:
 
         BufferDump dump_xs;       // Positions
         BufferDump dump_x_prevs;  // Positions at last frame
         BufferDump dump_vs;       // Velocities
+        BufferDump dump_edge_strain;
+        BufferDump dump_edge_stress;
+        BufferDump dump_tet_green_strain;
+        BufferDump dump_tet_cauchy_stress;
 
         // Dof Info:
 

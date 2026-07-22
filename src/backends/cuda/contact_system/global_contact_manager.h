@@ -6,6 +6,7 @@
 #include <contact_system/contact_coeff.h>
 #include <algorithm/matrix_converter.h>
 #include <utils/offset_count_collection.h>
+#include <backends/cuda/utils/dump_utils.h>
 
 namespace uipc::backend::cuda
 {
@@ -21,9 +22,43 @@ class GlobalContactManager final : public SimSystem
 
     class Impl;
 
-    using GradientHessianExtentInfo = GlobalDyTopoEffectManager::GradientHessianExtentInfo;
+    class GradientHessianExtentInfo
+    {
+      public:
+        void  gradient_only(bool v) noexcept { m_gradient_only = v; }
+        bool  gradient_only() const noexcept { return m_gradient_only; }
+        void  gradient_count(SizeT count) noexcept { m_gradient_count = count; }
+        void  hessian_count(SizeT count) noexcept { m_hessian_count = count; }
+        SizeT gradient_count() const noexcept { return m_gradient_count; }
+        SizeT hessian_count() const noexcept { return m_hessian_count; }
 
-    using GradientHessianInfo = GlobalDyTopoEffectManager::GradientHessianInfo;
+      private:
+        bool  m_gradient_only  = false;
+        SizeT m_gradient_count = 0;
+        SizeT m_hessian_count  = 0;
+    };
+
+    class GradientHessianInfo
+    {
+      public:
+        void gradient_only(bool v) noexcept { m_gradient_only = v; }
+        bool gradient_only() const noexcept { return m_gradient_only; }
+        void gradients(muda::DoubletVectorView<Float, 3> gradients) noexcept
+        {
+            m_gradients = gradients;
+        }
+        void hessians(muda::TripletMatrixView<Float, 3> hessians) noexcept
+        {
+            m_hessians = hessians;
+        }
+        auto gradients() const noexcept { return m_gradients; }
+        auto hessians() const noexcept { return m_hessians; }
+
+      private:
+        bool                              m_gradient_only = false;
+        muda::DoubletVectorView<Float, 3> m_gradients;
+        muda::TripletMatrixView<Float, 3> m_hessians;
+    };
 
     using EnergyExtentInfo = GlobalDyTopoEffectManager::EnergyExtentInfo;
 
@@ -89,6 +124,17 @@ class GlobalContactManager final : public SimSystem
         SimSystemSlotCollection<ContactReporter> contact_reporters;
         SimSystemSlotCollection<ContactReceiver> contact_receivers;
         SimSystemSlot<AdaptiveContactParameterReporter> adaptive_contact_parameter_reporter;
+
+        OffsetCountCollection<IndexT> reporter_gradient_offsets_counts;
+        OffsetCountCollection<IndexT> reporter_hessian_offsets_counts;
+        muda::DeviceDoubletVector<Float, 3>      collected_contact_gradients;
+        muda::DeviceTripletMatrix<Float, 3>      collected_contact_hessians;
+        muda::DeviceBuffer<Vector3>              contact_forces;
+        BufferDump                               dump_contact_forces;
+
+        void loose_resize_entries(muda::DeviceDoubletVector<Float, 3>& v, SizeT size);
+        void loose_resize_entries(muda::DeviceTripletMatrix<Float, 3>& m, SizeT size);
+        void assemble_contact_dense_forces();
     };
 
     Float d_hat() const;
@@ -102,6 +148,7 @@ class GlobalContactManager final : public SimSystem
 
   protected:
     virtual void do_build() override;
+    virtual bool do_dump(DumpInfo& info) override;
 
   private:
     friend class SimEngine;

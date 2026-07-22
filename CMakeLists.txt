@@ -18,7 +18,7 @@ uipc_parse_version(${UIPC_VERSION} UIPC_VERSION_MAJOR UIPC_VERSION_MINOR UIPC_VE
 # =========================================================================
 option(UIPC_USING_LOCAL_VCPKG "Using local vcpkg" ON)
 option(UIPC_BUILD_GUI "Build GUI, turn it off if you're server only" OFF)
-option(UIPC_BUILD_PYBIND "Build pyuipc" OFF)
+option(UIPC_BUILD_PYBIND "Build pyuipc" ON)
 option(UIPC_BUILD_PYTHON_WHEEL "Wheel build mode for Python post-build helper" OFF)
 option(UIPC_BUILD_EXAMPLES "Build examples" ON)
 option(UIPC_BUILD_TESTS "Build tests" ON)

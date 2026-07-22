@@ -2,8 +2,11 @@
 #include <uipc/builtin/attribute_name.h>
 #include <finite_element/constitutions/kirchhoff_rod_bending_function.h>
 #include <numbers>
+#include <cmath>
 #include <utils/make_spd.h>
 #include <utils/matrix_assembler.h>
+#include <backends/cuda/utils/dump_utils.h>
+#include <fmt/format.h>
 
 #include <kernel_cout.h>
 namespace uipc::backend::cuda
@@ -24,9 +27,21 @@ class KirchhoffRodBending final : public FiniteElementExtraConstitution
 
     muda::DeviceBuffer<Vector3i> hinges;
     muda::DeviceBuffer<Float>    bending_stiffnesses;
+    muda::DeviceBuffer<Float>    hinge_curvatures;
+    muda::DeviceBuffer<Float>    hinge_bend_strains;
+    muda::DeviceBuffer<Float>    hinge_max_stresses;
+
+    FiniteElementMethod* fem = nullptr;
+
+    BufferDump dump_curvature;
+    BufferDump dump_bend_strain;
+    BufferDump dump_bend_stress;
 
 
-    virtual void do_build(BuildInfo& info) override {}
+    virtual void do_build(BuildInfo& info) override
+    {
+        fem = &require<FiniteElementMethod>();
+    }
 
     virtual void do_init(FilteredInfo& info) override
     {
@@ -97,6 +112,10 @@ class KirchhoffRodBending final : public FiniteElementExtraConstitution
 
         bending_stiffnesses.resize(h_bending_stiffness.size());
         bending_stiffnesses.view().copy_from(h_bending_stiffness.data());
+
+        hinge_curvatures.resize(hinges.size(), 0.0);
+        hinge_bend_strains.resize(hinges.size(), 0.0);
+        hinge_max_stresses.resize(hinges.size(), 0.0);
     }
 
     virtual void do_report_extent(ReportExtentInfo& info) override
@@ -210,6 +229,108 @@ class KirchhoffRodBending final : public FiniteElementExtraConstitution
                        TripletMatrixAssembler TMA{H3x3s};
                        TMA.half_block<StencilSize>(I * HalfHessianSize).write(hinge, H);
                    });
+    }
+
+    virtual bool do_dump(DumpInfo& info) override
+    {
+        if(!fem)
+            return true;
+
+        auto path  = info.dump_path(__FILE__);
+        auto frame = info.frame();
+
+        if(hinges.size() > 0)
+        {
+            using namespace muda;
+
+            auto xs_view        = fem->xs();
+            auto x_bars_view    = fem->x_bars();
+            auto thickness_view = fem->thicknesses();
+
+            auto xs          = xs_view.viewer().name("xs");
+            auto x_bars      = x_bars_view.viewer().name("x_bars");
+            auto thicknesses = thickness_view.viewer().name("thicknesses");
+
+            auto hinge_view       = hinges.cviewer().name("hinges");
+            auto bending_view     = bending_stiffnesses.cviewer().name("bending_stiffnesses");
+            auto curvature_view   = hinge_curvatures.viewer().name("hinge_curvatures");
+            auto bend_strain_view = hinge_bend_strains.viewer().name("hinge_bend_strains");
+            auto max_stress_view  = hinge_max_stresses.viewer().name("hinge_max_stresses");
+
+            ParallelFor()
+                .kernel_name("KirchhoffRodBending Dump")
+                .apply(hinges.size(),
+                       [hinges       = hinge_view,
+                        xs           = xs,
+                        x_bars       = x_bars,
+                        thicknesses  = thicknesses,
+                        bending      = bending_view,
+                        curvatures   = curvature_view,
+                        bend_strains = bend_strain_view,
+                        max_stresses = max_stress_view] __device__(int I) mutable
+                       {
+                           const Vector3i hinge = hinges(I);
+                           const IndexT   v0    = hinge[0];
+                           const IndexT   vc    = hinge[1];
+                           const IndexT   v2    = hinge[2];
+
+                           const Vector3& x0 = xs(v0);
+                           const Vector3& xc = xs(vc);
+                           const Vector3& x2 = xs(v2);
+
+                           const Vector3& X0 = x_bars(v0);
+                           const Vector3& Xc = x_bars(vc);
+                           const Vector3& X2 = x_bars(v2);
+
+                           const Float thickness = thicknesses(vc);
+                           const Float stiffness = bending(I);
+
+                           const Vector3 e0     = x0 - xc;
+                           const Vector3 e1     = x2 - xc;
+                           const Float   e0_len = e0.norm();
+                           const Float   e1_len = e1.norm();
+
+                           Float phi = 0.0;
+                           if(e0_len > static_cast<Float>(1e-12) && e1_len > static_cast<Float>(1e-12))
+                           {
+                               Float cos_phi = (e0.dot(e1)) / (e0_len * e1_len);
+                               if(cos_phi > static_cast<Float>(1.0))
+                                   cos_phi = static_cast<Float>(1.0);
+                               else if(cos_phi < static_cast<Float>(-1.0))
+                                   cos_phi = static_cast<Float>(-1.0);
+                               phi = acos(cos_phi);
+                           }
+
+                           const Float L0 = (Xc - X0).norm() + (X2 - Xc).norm();
+
+                           Float curvature = 0.0;
+                           if(L0 > static_cast<Float>(1e-12))
+                               curvature = static_cast<Float>(2.0) * sin(phi * static_cast<Float>(0.5)) / L0;
+
+                           const Float bend_strain = curvature * thickness;
+                           const Float max_stress  = stiffness * bend_strain;
+
+                           curvatures(I)   = curvature;
+                           bend_strains(I) = bend_strain;
+                           max_stresses(I) = max_stress;
+                       });
+        }
+
+        bool ok = true;
+
+        if(hinges.size() > 0)
+        {
+            ok = ok
+                 && dump_curvature.dump(fmt::format("{}rod_curvature.{}", path, frame), hinge_curvatures);
+            ok = ok
+                 && dump_bend_strain.dump(fmt::format("{}rod_bend_strain.{}", path, frame),
+                                          hinge_bend_strains);
+            ok = ok
+                 && dump_bend_stress.dump(fmt::format("{}rod_bend_stress.{}", path, frame),
+                                          hinge_max_stresses);
+        }
+
+        return ok;
     }
 };
 

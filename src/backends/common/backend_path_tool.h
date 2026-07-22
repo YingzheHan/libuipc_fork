@@ -24,10 +24,10 @@ class BackendPathTool
      * Example:
      * "src/backends/cuda/MyFolder/MyFile.cu" -> workspace + "/cuda/MyFolder/MyFile.cu"
      * 
-     * @param uipc_relative_source_file Must be UIPC_RELATIVE_SOURCE_FILE.
+     * @param uipc_source_file UIPC_RELATIVE_SOURCE_FILE or __FILE__ from backend sources.
      * @param prefix
      */
-    Path workspace(std::string_view uipc_relative_source_file, std::string_view prefix = "") const noexcept;
+    Path workspace(std::string_view uipc_source_file, std::string_view prefix = "") const noexcept;
 
     static constexpr std::string_view backend_name() noexcept
     {

@@ -16,6 +16,7 @@
 #include <pyuipc/constitution/finite_element_extra_constitution.h>
 #include <pyuipc/constitution/inter_affine_body_extra_constitution.h>
 #include <pyuipc/constitution/kirchhoff_rod_bending.h>
+#include <pyuipc/constitution/thermal_spring_1d.h>
 #include <pyuipc/constitution/soft_transform_constraint.h>
 #include <pyuipc/constitution/discrete_shell_bending.h>
 #include <pyuipc/constitution/strain_plastic_discrete_shell_bending.h>
@@ -79,6 +80,7 @@ PyModule::PyModule(py::module& m)
     // Finite Extra Constitutions
     PyFiniteElementExtraConstitution{m};
     PyKirchhoffRodBending{m};
+    PyThermalSpring1D{m};
     PyDiscreteShellBending{m};
     PyStrainPlasticDiscreteShellBending{m};
     PyStressPlasticDiscreteShellBending{m};

@@ -23,6 +23,7 @@
 #include <finite_element/codim_1d_constitution.h>
 #include <finite_element/codim_0d_constitution.h>
 #include <uipc/builtin/constitution_type.h>
+#include <finite_element/constitutions/stable_neo_hookean_3d_function.h>
 // diff parm reporters
 #include <finite_element/finite_element_diff_parm_reporter.h>
 #include <finite_element/finite_element_constitution_diff_parm_reporter.h>
@@ -542,6 +543,10 @@ void FiniteElementMethod::Impl::_build_on_host(WorldVisitor& world)
         h_vertex_is_dynamic.resize(h_positions.size(), 1);  // fill 1 for default, default dynamic
         h_vertex_body_id.resize(h_positions.size(), -1);  // fill -1 for default, invalid body id
 
+        h_edge_kappas.resize(h_codim_1ds.size(), 0.0);
+        h_tet_mus.resize(h_tets.size(), 0.0);
+        h_tet_lambdas.resize(h_tets.size(), 0.0);
+
 
         for(auto&& [i, info] : enumerate(geo_infos))
         {
@@ -584,6 +589,20 @@ void FiniteElementMethod::Impl::_build_on_host(WorldVisitor& world)
                                    dst_codim_1d_span.begin(),
                                    [&](const Vector2i& edge) -> Vector2i
                                    { return edge.array() + info.vertex_offset; });
+
+                    auto dst_kappa_span =
+                        span{h_edge_kappas}.subspan(info.primitive_offset, info.primitive_count);
+                    if(auto kappa_attr = sc->edges().find<Float>("kappa"))
+                    {
+                        auto kappa_view = kappa_attr->view();
+                        UIPC_ASSERT(kappa_view.size() == dst_kappa_span.size(),
+                                    "kappa size mismatching");
+                        std::ranges::copy(kappa_view, dst_kappa_span.begin());
+                    }
+                    else
+                    {
+                        std::ranges::fill(dst_kappa_span, 0.0);
+                    }
                 }
                 break;
                 case 2: {
@@ -614,6 +633,30 @@ void FiniteElementMethod::Impl::_build_on_host(WorldVisitor& world)
                                    dst_tet_span.begin(),
                                    [&](const Vector4i& tet) -> Vector4i
                                    { return tet.array() + info.vertex_offset; });
+
+                    auto dst_mu_span =
+                        span{h_tet_mus}.subspan(info.primitive_offset, info.primitive_count);
+                    auto dst_lambda_span =
+                        span{h_tet_lambdas}.subspan(info.primitive_offset, info.primitive_count);
+
+                    auto mu_attr     = sc->tetrahedra().find<Float>("mu");
+                    auto lambda_attr = sc->tetrahedra().find<Float>("lambda");
+                    if(mu_attr && lambda_attr)
+                    {
+                        auto mu_view     = mu_attr->view();
+                        auto lambda_view = lambda_attr->view();
+                        UIPC_ASSERT(mu_view.size() == dst_mu_span.size(),
+                                    "mu size mismatching");
+                        UIPC_ASSERT(lambda_view.size() == dst_lambda_span.size(),
+                                    "lambda size mismatching");
+                        std::ranges::copy(mu_view, dst_mu_span.begin());
+                        std::ranges::copy(lambda_view, dst_lambda_span.begin());
+                    }
+                    else
+                    {
+                        std::ranges::fill(dst_mu_span, 0.0);
+                        std::ranges::fill(dst_lambda_span, 0.0);
+                    }
                 }
                 break;
                 default:
@@ -925,6 +968,9 @@ void FiniteElementMethod::Impl::_build_on_device()
     codim_1ds.resize(h_codim_1ds.size());
     codim_1ds.view().copy_from(h_codim_1ds.data());
     rest_lengths.resize(codim_1ds.size());
+    edge_kappas.resize(h_edge_kappas.size());
+    if(!h_edge_kappas.empty())
+        edge_kappas.view().copy_from(h_edge_kappas.data());
 
     codim_2ds.resize(h_codim_2ds.size());
     codim_2ds.view().copy_from(h_codim_2ds.data());
@@ -933,6 +979,17 @@ void FiniteElementMethod::Impl::_build_on_device()
     tets.resize(h_tets.size());
     tets.view().copy_from(h_tets.data());
     rest_volumes.resize(tets.size());
+    tet_mus.resize(h_tet_mus.size());
+    tet_lambdas.resize(h_tet_lambdas.size());
+    if(!h_tet_mus.empty())
+        tet_mus.view().copy_from(h_tet_mus.data());
+    if(!h_tet_lambdas.empty())
+        tet_lambdas.view().copy_from(h_tet_lambdas.data());
+
+    edge_strains.resize(codim_1ds.size(), 0.0);
+    edge_stresses.resize(codim_1ds.size(), 0.0);
+    tet_green_strains.resize(tets.size(), Matrix3x3::Zero());
+    tet_cauchy_stresses.resize(tets.size(), Matrix3x3::Zero());
 
     // 3) Material Space Attribute
     // Rod
@@ -1165,3 +1222,4 @@ void FiniteElementMethod::overwrite_xs(muda::CBufferView<Vector3> xs)
     m_impl.xs.view().copy_from(xs);
 }
 }  // namespace uipc::backend::cuda
+
